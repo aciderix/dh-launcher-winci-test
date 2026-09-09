@@ -54,43 +54,43 @@ jobs:
           $giws = Get-ItemProperty -Path "HKLM:\SOFTWARE\GitForWindows" -ErrorAction SilentlyContinue
           if ($giws) { Write-Host "GitForWindows InstallPath (HKLM): $($giws.InstallPath)" } else { Write-Host "Pas de cle GitForWindows dans HKLM" }
 
-      - name: "Lance le launcher (run-launcher.bat) en arriere-plan"
+      - name: "Lance le launcher + declenche le build + suit jusqu'a DONE/FAILED (une seule etape : le process arriere-plan ne survit pas entre steps sur les runners Windows)"
         shell: pwsh
+        timeout-minutes: 35
         run: |
           cd launcher-windows
           $bat = (Resolve-Path ".\run-launcher.bat").Path
           $p = Start-Process -FilePath $bat -WorkingDirectory (Get-Location) -PassThru -RedirectStandardOutput "$PWD\launcher-stdout.log" -RedirectStandardError "$PWD\launcher-stderr.log" -WindowStyle Hidden
           Set-Content -Path "$PWD\launcher.pid" -Value $p.Id
           Start-Sleep -Seconds 5
+
+          $ready = $false
           for ($i=0; $i -lt 20; $i++) {
             try {
               $r = Invoke-RestMethod -Uri "http://127.0.0.1:8090/health" -TimeoutSec 3
               Write-Host "health OK: $($r | ConvertTo-Json)"
+              $ready = $true
               break
             } catch {
               Write-Host "pas encore pret ($i) ..."
               Start-Sleep -Seconds 3
             }
           }
-          Write-Host "=== stdout launcher ==="
+          Write-Host "=== stdout launcher (demarrage) ==="
           Get-Content "$PWD\launcher-stdout.log" -ErrorAction SilentlyContinue
-          Write-Host "=== stderr launcher ==="
+          Write-Host "=== stderr launcher (demarrage) ==="
           Get-Content "$PWD\launcher-stderr.log" -ErrorAction SilentlyContinue
+          if (-not $ready) { Write-Host "=== launcher jamais pret, abandon ==="; exit 1 }
 
-      - name: "Lance la generation serveur (equivalent: selectionner l'APK, cocher tout, cliquer Generer)"
-        shell: pwsh
-        run: |
-          cd launcher-windows
           $apkPath = (Resolve-Path "..\disney-heroes.xapk").Path
           $body = "apkPath=$([uri]::EscapeDataString($apkPath))&target=server&full=true&pkg=true"
+          Write-Host "=== POST /build/start ==="
           $resp = Invoke-RestMethod -Uri "http://127.0.0.1:8090/build/start" -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
           Write-Host ($resp | ConvertTo-Json -Depth 5)
 
-      - name: "Suit le build jusqu'a DONE/FAILED (avec debug complet), timeout 30 min"
-        shell: pwsh
-        run: |
           $deadline = (Get-Date).AddMinutes(30)
           $lastLen = 0
+          $final = "TIMEOUT"
           while ((Get-Date) -lt $deadline) {
             $st = Invoke-RestMethod -Uri "http://127.0.0.1:8090/build/status" -TimeoutSec 10
             $log = $st.log
@@ -98,12 +98,16 @@ jobs:
               Write-Host $log.Substring($lastLen)
               $lastLen = $log.Length
             }
-            if ($st.state -eq "DONE") { Write-Host "=== BUILD DONE ==="; exit 0 }
-            if ($st.state -eq "FAILED") { Write-Host "=== BUILD FAILED (step=$($st.step)) ==="; exit 1 }
+            if ($st.state -eq "DONE") { $final = "DONE"; break }
+            if ($st.state -eq "FAILED") { $final = "FAILED (step=$($st.step))"; break }
             Start-Sleep -Seconds 10
           }
-          Write-Host "=== TIMEOUT sans DONE/FAILED ==="
-          exit 1
+          Write-Host "=== RESULTAT FINAL: $final ==="
+          Write-Host "=== stdout launcher (fin) ==="
+          Get-Content "$PWD\launcher-stdout.log" -ErrorAction SilentlyContinue
+          Write-Host "=== stderr launcher (fin) ==="
+          Get-Content "$PWD\launcher-stderr.log" -ErrorAction SilentlyContinue
+          if ($final -ne "DONE") { exit 1 }
 
       - name: "DEBUG - dump erreurs dex2jar / logs launcher si echec"
         if: always()
