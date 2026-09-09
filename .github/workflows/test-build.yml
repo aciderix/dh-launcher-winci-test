@@ -1,0 +1,131 @@
+name: Test build serveur (Windows lambda)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/test-build.yml'
+  workflow_dispatch: {}
+
+jobs:
+  test-windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: "DEBUG - environnement de base (ce que le runner a deja, rien ajoute)"
+        shell: pwsh
+        run: |
+          Write-Host "=== OS ==="
+          [System.Environment]::OSVersion | Out-String | Write-Host
+          Write-Host "=== bash.exe trouve ou ? ==="
+          Get-Command bash -ErrorAction SilentlyContinue | Format-List
+          Write-Host "=== git ==="
+          git --version
+          Write-Host "=== unzip (via bash) ==="
+          bash -lc "command -v unzip && unzip -v | head -1" 2>&1
+          Write-Host "=== curl (via bash) ==="
+          bash -lc "command -v curl && curl --version | head -1" 2>&1
+          Write-Host "=== curl.exe systeme ==="
+          Get-Command curl.exe -ErrorAction SilentlyContinue | Format-List
+          Write-Host "=== python ==="
+          python --version
+          Write-Host "=== java (systeme, pour verifier qu'on ne s'en sert PAS) ==="
+          Get-Command java -ErrorAction SilentlyContinue | Format-List
+
+      - name: "Telecharge la release Windows du launcher (v0.2.11, la seule avec assets)"
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/aciderix/Disney-Heroes-Battle-Mode---server/releases/download/launcher-v0.2.11/dh-launcher-windows.zip" -OutFile "launcher.zip"
+          Expand-Archive -Path "launcher.zip" -DestinationPath "." -Force
+          Get-ChildItem launcher-windows | Select-Object Name
+
+      - name: "Telecharge l'APK (Google Drive, meme lien que fourni par l'utilisateur)"
+        shell: pwsh
+        run: |
+          python -m pip install --quiet gdown
+          python -m gdown "https://drive.google.com/uc?id=1XCapSM-tuDbwGVY4-sT6Rd0md1kTqyHH" -O disney-heroes.xapk
+          Get-Item disney-heroes.xapk | Select-Object Name, Length
+
+      - name: "DEBUG - bash resolu par le launcher lui-meme (registre + ProgramFiles)"
+        shell: pwsh
+        run: |
+          Write-Host "ProgramFiles = $env:ProgramFiles"
+          Test-Path "$env:ProgramFiles\Git\bin\bash.exe"
+          $giws = Get-ItemProperty -Path "HKLM:\SOFTWARE\GitForWindows" -ErrorAction SilentlyContinue
+          if ($giws) { Write-Host "GitForWindows InstallPath (HKLM): $($giws.InstallPath)" } else { Write-Host "Pas de cle GitForWindows dans HKLM" }
+
+      - name: "Lance le launcher (run-launcher.bat) en arriere-plan"
+        shell: pwsh
+        run: |
+          cd launcher-windows
+          $p = Start-Process -FilePath "run-launcher.bat" -WorkingDirectory (Get-Location) -PassThru -RedirectStandardOutput "$PWD\launcher-stdout.log" -RedirectStandardError "$PWD\launcher-stderr.log" -WindowStyle Hidden
+          Set-Content -Path "$PWD\launcher.pid" -Value $p.Id
+          Start-Sleep -Seconds 5
+          for ($i=0; $i -lt 20; $i++) {
+            try {
+              $r = Invoke-RestMethod -Uri "http://127.0.0.1:8090/health" -TimeoutSec 3
+              Write-Host "health OK: $($r | ConvertTo-Json)"
+              break
+            } catch {
+              Write-Host "pas encore pret ($i) ..."
+              Start-Sleep -Seconds 3
+            }
+          }
+          Write-Host "=== stdout launcher ==="
+          Get-Content "$PWD\launcher-stdout.log" -ErrorAction SilentlyContinue
+          Write-Host "=== stderr launcher ==="
+          Get-Content "$PWD\launcher-stderr.log" -ErrorAction SilentlyContinue
+
+      - name: "Lance la generation serveur (equivalent: selectionner l'APK, cocher tout, cliquer Generer)"
+        shell: pwsh
+        run: |
+          cd launcher-windows
+          $apkPath = (Resolve-Path "..\disney-heroes.xapk").Path
+          $body = "apkPath=$([uri]::EscapeDataString($apkPath))&target=server&full=true&pkg=true"
+          $resp = Invoke-RestMethod -Uri "http://127.0.0.1:8090/build/start" -Method Post -Body $body -ContentType "application/x-www-form-urlencoded"
+          Write-Host ($resp | ConvertTo-Json -Depth 5)
+
+      - name: "Suit le build jusqu'a DONE/FAILED (avec debug complet), timeout 30 min"
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(30)
+          $lastLen = 0
+          while ((Get-Date) -lt $deadline) {
+            $st = Invoke-RestMethod -Uri "http://127.0.0.1:8090/build/status" -TimeoutSec 10
+            $log = $st.log
+            if ($log.Length -gt $lastLen) {
+              Write-Host $log.Substring($lastLen)
+              $lastLen = $log.Length
+            }
+            if ($st.state -eq "DONE") { Write-Host "=== BUILD DONE ==="; exit 0 }
+            if ($st.state -eq "FAILED") { Write-Host "=== BUILD FAILED (step=$($st.step)) ==="; exit 1 }
+            Start-Sleep -Seconds 10
+          }
+          Write-Host "=== TIMEOUT sans DONE/FAILED ==="
+          exit 1
+
+      - name: "DEBUG - dump erreurs dex2jar / logs launcher si echec"
+        if: always()
+        shell: pwsh
+        run: |
+          cd launcher-windows
+          Write-Host "=== stdout launcher ==="
+          Get-Content "launcher-stdout.log" -ErrorAction SilentlyContinue
+          Write-Host "=== stderr launcher ==="
+          Get-Content "launcher-stderr.log" -ErrorAction SilentlyContinue
+          Write-Host "=== recherche universal-error.zip (erreurs dex2jar) ==="
+          Get-ChildItem -Recurse -Filter "*error*.zip" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host "=== contenu tooling/build ==="
+          Get-ChildItem -Recurse tooling\build -ErrorAction SilentlyContinue | Select-Object FullName, Length
+
+      - name: "Upload artefacts (logs + build/status complet) pour analyse"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dh-build-debug-logs
+          path: |
+            launcher-windows/launcher-stdout.log
+            launcher-windows/launcher-stderr.log
+            launcher-windows/tooling/build/**
+          if-no-files-found: warn
+          retention-days: 14
