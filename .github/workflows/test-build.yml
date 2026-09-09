@@ -58,7 +58,8 @@ jobs:
         shell: pwsh
         run: |
           cd launcher-windows
-          $p = Start-Process -FilePath "run-launcher.bat" -WorkingDirectory (Get-Location) -PassThru -RedirectStandardOutput "$PWD\launcher-stdout.log" -RedirectStandardError "$PWD\launcher-stderr.log" -WindowStyle Hidden
+          $bat = (Resolve-Path ".\run-launcher.bat").Path
+          $p = Start-Process -FilePath $bat -WorkingDirectory (Get-Location) -PassThru -RedirectStandardOutput "$PWD\launcher-stdout.log" -RedirectStandardError "$PWD\launcher-stderr.log" -WindowStyle Hidden
           Set-Content -Path "$PWD\launcher.pid" -Value $p.Id
           Start-Sleep -Seconds 5
           for ($i=0; $i -lt 20; $i++) {
