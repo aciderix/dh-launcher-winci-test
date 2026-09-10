@@ -24,7 +24,7 @@ jobs:
       - name: "Telecharge le bundle selfcontained (avec bash portable embarque)"
         shell: pwsh
         run: |
-          $url = "https://base44.app/api/apps/6a304a7fce6501b48e5f64c6/files/mp/public/6a304a7fce6501b48e5f64c6/c11350107_dh-launcher-windows-selfcontained.zip"
+          $url = "https://github.com/aciderix/dh-launcher-winci-test/releases/download/selfcontained-bash-v1/dh-launcher-windows-selfcontained.zip"
           Write-Host "Telechargement via curl.exe natif..."
           & curl.exe -L --fail --retry 3 -o bundle.zip $url
           if ($LASTEXITCODE -ne 0) { Write-Host "curl exit code: $LASTEXITCODE"; exit 1 }
