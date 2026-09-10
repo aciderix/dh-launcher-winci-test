@@ -24,8 +24,22 @@ jobs:
       - name: "Telecharge le bundle selfcontained (avec bash portable embarque)"
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://base44.app/api/apps/6a304a7fce6501b48e5f64c6/files/mp/public/6a304a7fce6501b48e5f64c6/c11350107_dh-launcher-windows-selfcontained.zip" -OutFile "bundle.zip"
-          Expand-Archive -Path "bundle.zip" -DestinationPath "launcher-windows" -Force
+          $url = "https://base44.app/api/apps/6a304a7fce6501b48e5f64c6/files/mp/public/6a304a7fce6501b48e5f64c6/c11350107_dh-launcher-windows-selfcontained.zip"
+          Write-Host "Telechargement via curl.exe natif..."
+          & curl.exe -L --fail --retry 3 -o bundle.zip $url
+          if ($LASTEXITCODE -ne 0) { Write-Host "curl exit code: $LASTEXITCODE"; exit 1 }
+          $size = (Get-Item bundle.zip).Length
+          Write-Host "Taille bundle.zip : $size octets"
+          if ($size -lt 100000000) { Write-Host "FICHIER TROP PETIT, download rate."; Get-Content bundle.zip -TotalCount 5; exit 1 }
+          try {
+            Expand-Archive -Path "bundle.zip" -DestinationPath "launcher-windows" -Force -ErrorAction Stop
+          } catch {
+            Write-Host "ERREUR Expand-Archive :"
+            Write-Host $_.Exception.GetType().FullName
+            Write-Host $_.Exception.Message
+            Write-Host $_.ScriptStackTrace
+            throw
+          }
           Get-ChildItem launcher-windows | Select-Object Name
 
       - name: "Telecharge l'APK (meme lien Google Drive)"
